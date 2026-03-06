@@ -291,14 +291,30 @@ function M.add_reference()
       local target_name = vim.fn.fnamemodify(target_project, ":t:r")
 
       local cmd = string.format('dotnet add "%s" reference "%s"', source_project, target_project)
+      local stderr_output = {}
+
+      vim.notify("Running: " .. cmd, vim.log.levels.INFO)
 
       vim.fn.jobstart(cmd, {
+        on_stderr = function(_, data)
+          if data then
+            for _, line in ipairs(data) do
+              if line and line ~= "" then
+                table.insert(stderr_output, line)
+              end
+            end
+          end
+        end,
         on_exit = function(_, exit_code)
           vim.schedule(function()
             if exit_code == 0 then
               vim.notify(string.format("Added reference: %s -> %s", source_name, target_name), vim.log.levels.INFO)
             else
-              vim.notify("Failed to add reference", vim.log.levels.ERROR)
+              local err_msg = "Failed to add reference"
+              if #stderr_output > 0 then
+                err_msg = err_msg .. ": " .. table.concat(stderr_output, " ")
+              end
+              vim.notify(err_msg, vim.log.levels.ERROR)
             end
           end)
         end,
