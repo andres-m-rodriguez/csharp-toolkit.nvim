@@ -492,6 +492,37 @@ function M._inject_services_primary(class_info, services)
     table.insert(names, s.name)
   end
   vim.notify("Injected: " .. table.concat(names, ", "), vim.log.levels.INFO)
+
+  -- Try to auto-add missing usings via LSP code action
+  vim.defer_fn(function()
+    M._add_missing_usings()
+  end, 100)
+end
+
+-- Trigger LSP code action to add missing usings
+function M._add_missing_usings()
+  local params = vim.lsp.util.make_range_params()
+  params.context = {
+    diagnostics = vim.diagnostic.get(0),
+    only = { "quickfix" },
+  }
+
+  vim.lsp.buf_request(0, "textDocument/codeAction", params, function(err, result)
+    if err or not result then return end
+
+    for _, action in ipairs(result) do
+      local title = action.title or ""
+      -- Look for "using" related actions
+      if title:match("^using") or title:match("^Add using") or title:match("Import") then
+        -- Execute the code action
+        if action.edit then
+          vim.lsp.util.apply_workspace_edit(action.edit, "utf-8")
+        elseif action.command then
+          vim.lsp.buf.execute_command(action.command)
+        end
+      end
+    end
+  end)
 end
 
 -- Convert type to parameter name (ILogger -> logger)
