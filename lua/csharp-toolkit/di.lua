@@ -176,143 +176,336 @@ function M.add_service()
   end
 end
 
--- Add service using inline completion in the actual buffer
+-- Add service using Telescope with project scanning
 function M._add_service_telescope(class_info)
-  M._add_service_inline(class_info)
-end
+  local pickers = require("telescope.pickers")
+  local finders = require("telescope.finders")
+  local conf = require("telescope.config").values
+  local actions = require("telescope.actions")
+  local action_state = require("telescope.actions.state")
+  local entry_display = require("telescope.pickers.entry_display")
 
--- Add service by inserting a temporary line for LSP completions
-function M._add_service_inline(class_info)
-  local bufnr = vim.api.nvim_get_current_buf()
   local selected_services = {}
 
-  -- Find insert position (after class declaration)
-  local insert_line = class_info.line
+  -- Scan project for types
+  local symbols = M._scan_project_for_types_sync()
 
-  -- Store original state for cleanup
-  local original_line_count = vim.api.nvim_buf_line_count(bufnr)
-
-  -- Insert helper comment and field template
-  local template_lines = {
-    "    // [DI] Type service, <Tab>=add more, <CR>=done, <Esc>=cancel",
-    "    private readonly ",
-  }
-
-  vim.api.nvim_buf_set_lines(bufnr, insert_line, insert_line, false, template_lines)
-
-  -- Position cursor at end of "private readonly "
-  local cursor_line = insert_line + 2  -- 1-indexed, second inserted line
-  local cursor_col = #"    private readonly "
-  vim.api.nvim_win_set_cursor(0, { cursor_line, cursor_col })
-  vim.cmd("startinsert!")
-
-  -- Cleanup function
-  local function cleanup()
-    -- Remove the template lines
-    pcall(function()
-      vim.api.nvim_buf_set_lines(bufnr, insert_line, insert_line + 2, false, {})
-    end)
-  end
-
-  -- Parse the typed service name
-  local function get_typed_service()
-    local line = vim.api.nvim_buf_get_lines(bufnr, cursor_line - 1, cursor_line, false)[1]
-    if not line then return nil end
-
-    -- Extract type name after "private readonly "
-    local type_name = line:match("private%s+readonly%s+([%w_<>]+)")
-    return type_name
-  end
-
-  -- Add current service and prepare for next
-  local function add_and_continue()
-    local service = get_typed_service()
-    if service and service ~= "" then
-      table.insert(selected_services, { name = service, kind = "interface" })
-      vim.notify("Added: " .. service .. " (" .. #selected_services .. " total)", vim.log.levels.INFO)
-
-      -- Reset the line for next input
-      vim.api.nvim_buf_set_lines(bufnr, cursor_line - 1, cursor_line, false, {
-        "    private readonly "
-      })
-      vim.api.nvim_win_set_cursor(0, { cursor_line, cursor_col })
-      vim.cmd("startinsert!")
-    end
-  end
-
-  -- Finish and inject services
-  local function finish()
-    local service = get_typed_service()
-    if service and service ~= "" then
-      table.insert(selected_services, { name = service, kind = "interface" })
-    end
-
-    cleanup()
-
-    if #selected_services > 0 then
-      vim.schedule(function()
-        M._inject_services(class_info, selected_services)
-      end)
-    else
-      vim.notify("No services added", vim.log.levels.INFO)
-    end
-  end
-
-  -- Cancel
-  local function cancel()
-    cleanup()
-    vim.notify("Cancelled", vim.log.levels.INFO)
-  end
-
-  -- Set up keymaps for this session
-  local opts = { buffer = bufnr, silent = true }
-
-  -- Store original keymaps to restore later
-  local km_tab = vim.fn.maparg("<Tab>", "i", false, true)
-  local km_cr = vim.fn.maparg("<CR>", "i", false, true)
-  local km_esc = vim.fn.maparg("<Esc>", "i", false, true)
-
-  -- Create an augroup for cleanup
-  local augroup = vim.api.nvim_create_augroup("CSAddServiceInline", { clear = true })
-
-  local function restore_keymaps()
-    pcall(vim.keymap.del, "i", "<Tab>", { buffer = bufnr })
-    pcall(vim.keymap.del, "i", "<CR>", { buffer = bufnr })
-    pcall(vim.keymap.del, "i", "<Esc>", { buffer = bufnr })
-    vim.api.nvim_del_augroup_by_id(augroup)
-  end
-
-  -- Tab: add current service and continue
-  vim.keymap.set("i", "<Tab>", function()
-    add_and_continue()
-  end, opts)
-
-  -- Enter: add current and finish
-  vim.keymap.set("i", "<CR>", function()
-    restore_keymaps()
-    finish()
-  end, opts)
-
-  -- Escape: cancel
-  vim.keymap.set("i", "<Esc>", function()
-    restore_keymaps()
-    cancel()
-  end, opts)
-
-  -- Auto-cleanup if user leaves insert mode unexpectedly
-  vim.api.nvim_create_autocmd("InsertLeave", {
-    group = augroup,
-    buffer = bufnr,
-    once = true,
-    callback = function()
-      -- Check if we still have our template
-      local line = vim.api.nvim_buf_get_lines(bufnr, insert_line, insert_line + 1, false)[1]
-      if line and line:match("%[DI%]") then
-        restore_keymaps()
-        finish()
-      end
-    end,
+  local displayer = entry_display.create({
+    separator = " ",
+    items = {
+      { width = 40 },
+      { width = 12 },
+    },
   })
+
+  pickers.new({}, {
+    prompt_title = "Add DI Service (<Tab>=select, <CR>=confirm, type anything)",
+    finder = finders.new_table({
+      results = symbols,
+      entry_maker = function(entry)
+        return {
+          value = entry,
+          display = function(e)
+            return displayer({
+              e.value.name,
+              { e.value.kind, "Comment" },
+            })
+          end,
+          ordinal = entry.name,
+        }
+      end,
+    }),
+    sorter = conf.generic_sorter({}),
+    attach_mappings = function(prompt_bufnr, map)
+      -- Tab: select current and continue
+      map("i", "<Tab>", function()
+        local entry = action_state.get_selected_entry()
+        local prompt = action_state.get_current_picker(prompt_bufnr):_get_prompt()
+
+        local service_name = nil
+        if entry then
+          service_name = entry.value.name
+        elseif prompt and prompt ~= "" then
+          -- Use typed text if no match selected
+          service_name = prompt:match("^%s*(.-)%s*$")
+        end
+
+        if service_name and service_name ~= "" then
+          local exists = false
+          for i, s in ipairs(selected_services) do
+            if s.name == service_name then
+              table.remove(selected_services, i)
+              exists = true
+              vim.notify("Removed: " .. service_name, vim.log.levels.INFO)
+              break
+            end
+          end
+          if not exists then
+            table.insert(selected_services, { name = service_name, kind = "interface" })
+            vim.notify("Added: " .. service_name .. " (" .. #selected_services .. " total)", vim.log.levels.INFO)
+          end
+        end
+
+        -- Clear prompt for next input
+        local picker = action_state.get_current_picker(prompt_bufnr)
+        picker:set_prompt("")
+      end)
+
+      map("n", "<Tab>", function()
+        local entry = action_state.get_selected_entry()
+        if entry then
+          local exists = false
+          for i, s in ipairs(selected_services) do
+            if s.name == entry.value.name then
+              table.remove(selected_services, i)
+              exists = true
+              break
+            end
+          end
+          if not exists then
+            table.insert(selected_services, entry.value)
+          end
+        end
+        actions.move_selection_next(prompt_bufnr)
+      end)
+
+      -- Enter: confirm selection
+      actions.select_default:replace(function()
+        local entry = action_state.get_selected_entry()
+        local prompt = action_state.get_current_picker(prompt_bufnr):_get_prompt()
+        actions.close(prompt_bufnr)
+
+        -- Add current selection/typed text
+        local service_name = nil
+        if entry then
+          service_name = entry.value.name
+        elseif prompt and prompt ~= "" then
+          service_name = prompt:match("^%s*(.-)%s*$")
+        end
+
+        if service_name and service_name ~= "" then
+          local exists = false
+          for _, s in ipairs(selected_services) do
+            if s.name == service_name then
+              exists = true
+              break
+            end
+          end
+          if not exists then
+            table.insert(selected_services, { name = service_name, kind = "interface" })
+          end
+        end
+
+        if #selected_services > 0 then
+          M._inject_services_primary(class_info, selected_services)
+        else
+          vim.notify("No services selected", vim.log.levels.WARN)
+        end
+      end)
+
+      return true
+    end,
+  }):find()
+end
+
+-- Synchronous scan for project types
+function M._scan_project_for_types_sync()
+  local symbols = {}
+  local projects = require("csharp-toolkit.projects")
+  local sln_dir = projects.get_solution_dir()
+
+  local cs_files = {}
+  local function scan_dir(dir)
+    local handle = vim.loop.fs_scandir(dir)
+    if not handle then return end
+
+    while true do
+      local name, ftype = vim.loop.fs_scandir_next(handle)
+      if not name then break end
+
+      local full_path = dir .. "/" .. name
+
+      if ftype == "directory" and not name:match("^%.") and name ~= "bin" and name ~= "obj" and name ~= "node_modules" then
+        scan_dir(full_path)
+      elseif ftype == "file" and name:match("%.cs$") then
+        table.insert(cs_files, full_path)
+      end
+    end
+  end
+
+  scan_dir(sln_dir)
+
+  for _, file in ipairs(cs_files) do
+    local f = io.open(file, "r")
+    if f then
+      local content = f:read("*all")
+      f:close()
+
+      for name in content:gmatch("interface%s+([%w_]+)") do
+        table.insert(symbols, { name = name, kind = "interface" })
+      end
+
+      for name in content:gmatch("class%s+([%w_]+)") do
+        table.insert(symbols, { name = name, kind = "class" })
+      end
+    end
+  end
+
+  -- Remove duplicates
+  local seen = {}
+  local unique = {}
+  for _, sym in ipairs(symbols) do
+    if not seen[sym.name] then
+      seen[sym.name] = true
+      table.insert(unique, sym)
+    end
+  end
+
+  return unique
+end
+
+-- Inject services using primary constructor syntax
+function M._inject_services_primary(class_info, services)
+  local bufnr = vim.api.nvim_get_current_buf()
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+
+  -- Find the class declaration line
+  local class_line_idx = class_info.line - 1  -- 0-indexed
+  local class_line = lines[class_info.line]
+
+  -- Check if class already has primary constructor
+  local has_primary_ctor = class_line:match("class%s+%w+%s*%(")
+
+  -- Parse existing primary constructor parameters if any
+  local existing_params = {}
+  if has_primary_ctor then
+    local params_str = class_line:match("class%s+%w+%s*%((.-)%)")
+    if params_str and params_str ~= "" then
+      for param in params_str:gmatch("([^,]+)") do
+        param = param:match("^%s*(.-)%s*$")
+        table.insert(existing_params, param)
+      end
+    end
+  end
+
+  -- Add new services as parameters
+  for _, service in ipairs(services) do
+    local param_name = M._type_to_param_name(service.name)
+    -- Check if already exists
+    local exists = false
+    for _, p in ipairs(existing_params) do
+      if p:match(service.name) then
+        exists = true
+        break
+      end
+    end
+    if not exists then
+      table.insert(existing_params, service.name .. " " .. param_name)
+    end
+  end
+
+  -- Build new class declaration with primary constructor
+  local indent = class_line:match("^(%s*)") or ""
+  local modifiers = class_line:match("^%s*(.-)%s*class%s") or "public "
+  modifiers = modifiers:match("^%s*(.-)%s*$")
+  if modifiers == "" then modifiers = "public" end
+
+  local new_class_decl
+  if #existing_params <= 2 then
+    -- Single line
+    new_class_decl = string.format("%s%s class %s(%s)",
+      indent,
+      modifiers,
+      class_info.name,
+      table.concat(existing_params, ", ")
+    )
+  else
+    -- Multi-line
+    new_class_decl = string.format("%s%s class %s(\n", indent, modifiers, class_info.name)
+    for i, param in ipairs(existing_params) do
+      new_class_decl = new_class_decl .. indent .. "    " .. param
+      if i < #existing_params then
+        new_class_decl = new_class_decl .. ","
+      end
+      new_class_decl = new_class_decl .. "\n"
+    end
+    new_class_decl = new_class_decl .. indent .. ")"
+  end
+
+  -- Find where the class declaration ends (might span multiple lines or have base class)
+  local decl_end_line = class_line_idx
+  local full_decl = class_line
+
+  -- Check if declaration continues (base class, interfaces, or opening brace)
+  if not class_line:match("{") then
+    for i = class_line_idx + 1, #lines - 1 do
+      full_decl = full_decl .. "\n" .. lines[i + 1]
+      decl_end_line = i
+      if lines[i + 1]:match("{") then
+        break
+      end
+    end
+  end
+
+  -- Extract base class/interfaces if any
+  local base_clause = full_decl:match("%)%s*(:.-){") or full_decl:match("class%s+%w+%s*(:.-){")
+  if not base_clause then
+    base_clause = full_decl:match("%)%s*(:.-)\n") or full_decl:match("class%s+%w+%s*(:.-)\n")
+  end
+
+  -- If there was no primary constructor but there's a base clause, preserve it
+  if not has_primary_ctor and base_clause then
+    -- Extract just the base types
+    local bases = base_clause:match(":%s*(.-)%s*$")
+    if bases then
+      bases = bases:gsub("{", ""):match("^%s*(.-)%s*$")
+      if bases and bases ~= "" then
+        new_class_decl = new_class_decl .. " : " .. bases
+      end
+    end
+  elseif has_primary_ctor and base_clause then
+    new_class_decl = new_class_decl .. " " .. base_clause:match("^%s*(.-)%s*$")
+  end
+
+  -- Find the opening brace
+  local brace_line = nil
+  for i = class_line_idx, math.min(class_line_idx + 5, #lines - 1) do
+    if lines[i + 1]:match("{") then
+      brace_line = i
+      break
+    end
+  end
+
+  if brace_line then
+    -- Replace from class declaration to opening brace
+    local new_lines = vim.split(new_class_decl, "\n")
+    table.insert(new_lines, indent .. "{")
+
+    vim.api.nvim_buf_set_lines(bufnr, class_line_idx, brace_line + 1, false, new_lines)
+  else
+    -- Just replace the class line
+    vim.api.nvim_buf_set_lines(bufnr, class_line_idx, class_line_idx + 1, false, vim.split(new_class_decl, "\n"))
+  end
+
+  local names = {}
+  for _, s in ipairs(services) do
+    table.insert(names, s.name)
+  end
+  vim.notify("Injected: " .. table.concat(names, ", "), vim.log.levels.INFO)
+end
+
+-- Convert type to parameter name (ILogger -> logger)
+function M._type_to_param_name(type_name)
+  local name = type_name
+  -- Remove generic part for naming
+  name = name:gsub("<.->", "")
+  -- Remove I prefix for interfaces
+  if name:match("^I[A-Z]") then
+    name = name:sub(2)
+  end
+  -- Convert to camelCase
+  name = name:sub(1, 1):lower() .. name:sub(2)
+  return name
 end
 
 -- Fallback: Add service using vim.ui.input
@@ -332,7 +525,7 @@ function M._add_service_input(class_info)
     end
 
     if #services > 0 then
-      M._inject_services(class_info, services)
+      M._inject_services_primary(class_info, services)
     end
   end)
 end
