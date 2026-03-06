@@ -14,6 +14,7 @@ M.config = {
     add_to_solution = "<leader>ca", -- Add project to solution
     remove_from_solution = "<leader>cr", -- Remove project from solution
     add_reference = "<leader>cR",  -- Add project reference
+    help = "<leader>ch",           -- Show help
   },
   -- Project templates (dotnet new templates)
   templates = {
@@ -60,6 +61,10 @@ function M.setup(opts)
     projects.list_references()
   end, { desc = "List project references" })
 
+  vim.api.nvim_create_user_command("CSHelp", function()
+    M.show_help()
+  end, { desc = "Show C# toolkit help" })
+
   -- Set up keymaps
   if M.config.keymaps then
     local km = M.config.keymaps
@@ -78,7 +83,70 @@ function M.setup(opts)
     if km.add_reference then
       vim.keymap.set("n", km.add_reference, "<cmd>CSAddReference<cr>", { desc = "Add project reference" })
     end
+    if km.help then
+      vim.keymap.set("n", km.help, "<cmd>CSHelp<cr>", { desc = "C# toolkit help" })
+    end
   end
+end
+
+-- Show help window with all keybinds
+function M.show_help()
+  local km = M.config.keymaps or {}
+
+  local lines = {
+    "╭─────────────────────────────────────────────╮",
+    "│           C# Toolkit - Keybinds             │",
+    "├─────────────────────────────────────────────┤",
+    "│                                             │",
+    "│  Projects                                   │",
+    string.format("│    %s  Create new project              │", km.new_project and string.format("%-10s", km.new_project) or "disabled  "),
+    string.format("│    %s  Add project reference           │", km.add_reference and string.format("%-10s", km.add_reference) or "disabled  "),
+    "│                                             │",
+    "│  Solutions                                  │",
+    string.format("│    %s  Create new solution             │", km.new_solution and string.format("%-10s", km.new_solution) or "disabled  "),
+    string.format("│    %s  Add project to solution         │", km.add_to_solution and string.format("%-10s", km.add_to_solution) or "disabled  "),
+    string.format("│    %s  Remove from solution            │", km.remove_from_solution and string.format("%-10s", km.remove_from_solution) or "disabled  "),
+    "│                                             │",
+    "│  Commands                                   │",
+    "│    :CSNewProject      Create project        │",
+    "│    :CSNewSolution     Create solution       │",
+    "│    :CSAddToSolution   Add to solution       │",
+    "│    :CSRemoveFromSolution                    │",
+    "│    :CSAddReference    Add reference         │",
+    "│    :CSRemoveReference Remove reference      │",
+    "│    :CSListProjects    List projects         │",
+    "│    :CSListReferences  List references       │",
+    "│                                             │",
+    "│  Press q or <Esc> to close                  │",
+    "╰─────────────────────────────────────────────╯",
+  }
+
+  -- Create buffer
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].modifiable = false
+  vim.bo[buf].bufhidden = "wipe"
+
+  -- Calculate window size and position
+  local width = 47
+  local height = #lines
+  local row = math.floor((vim.o.lines - height) / 2)
+  local col = math.floor((vim.o.columns - width) / 2)
+
+  -- Create floating window
+  local win = vim.api.nvim_open_win(buf, true, {
+    relative = "editor",
+    width = width,
+    height = height,
+    row = row,
+    col = col,
+    style = "minimal",
+    border = "none",
+  })
+
+  -- Set keymaps to close
+  vim.keymap.set("n", "q", "<cmd>close<cr>", { buffer = buf, silent = true })
+  vim.keymap.set("n", "<Esc>", "<cmd>close<cr>", { buffer = buf, silent = true })
 end
 
 -- Expose modules for direct access
