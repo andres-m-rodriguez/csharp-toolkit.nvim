@@ -9,6 +9,13 @@ local SYMBOL_KIND = {
   Struct = 23,
 }
 
+-- LSP Completion item kinds for types
+local COMPLETION_KIND = {
+  Class = 7,
+  Interface = 8,
+  Struct = 22,
+}
+
 -- Get workspace symbols from LSP
 local function get_workspace_symbols(query, callback)
   local params = { query = query or "" }
@@ -169,223 +176,139 @@ function M.add_service()
   end
 end
 
--- Add service using Telescope with LSP symbols
+-- Add service using a floating input with LSP completions
 function M._add_service_telescope(class_info)
-  local pickers = require("telescope.pickers")
-  local finders = require("telescope.finders")
-  local conf = require("telescope.config").values
-  local actions = require("telescope.actions")
-  local action_state = require("telescope.actions.state")
-  local entry_display = require("telescope.pickers.entry_display")
-
   local selected_services = {}
 
-  -- First, let's get document symbols from current buffer and workspace
-  local function collect_symbols(callback)
-    local all_symbols = {}
+  -- Create a floating window for input with LSP completions
+  M._create_service_input(class_info, selected_services)
+end
 
-    -- Get workspace symbols with a broad query
-    local clients = vim.lsp.get_clients({ bufnr = 0 })
-    if #clients == 0 then
-      vim.notify("No LSP client attached", vim.log.levels.WARN)
-      callback({})
-      return
+-- Create floating input buffer with LSP completions
+function M._create_service_input(class_info, selected_services)
+  local buf = vim.api.nvim_create_buf(false, true)
+
+  -- Set buffer options to enable LSP
+  vim.bo[buf].filetype = "cs"
+  vim.bo[buf].buftype = ""
+  vim.bo[buf].modifiable = true
+
+  -- Add a line of C# code context so LSP provides type completions
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, {
+    "// Type service name and press <CR> to add, <Tab> to add more, <Esc> to finish",
+    "// Selected: (none)",
+    "",
+    "" -- User types here
+  })
+
+  -- Calculate window position
+  local width = 70
+  local height = 4
+  local row = math.floor((vim.o.lines - height) / 2)
+  local col = math.floor((vim.o.columns - width) / 2)
+
+  local win = vim.api.nvim_open_win(buf, true, {
+    relative = "editor",
+    width = width,
+    height = height,
+    row = row,
+    col = col,
+    style = "minimal",
+    border = "rounded",
+    title = " Add DI Service ",
+    title_pos = "center",
+  })
+
+  -- Position cursor on the input line
+  vim.api.nvim_win_set_cursor(win, { 4, 0 })
+  vim.cmd("startinsert")
+
+  -- Try to attach LSP for completions
+  local clients = vim.lsp.get_clients({ name = "roslyn" })
+  if #clients > 0 then
+    vim.lsp.buf_attach_client(buf, clients[1].id)
+  end
+
+  -- Update selected display
+  local function update_selected()
+    local names = {}
+    for _, s in ipairs(selected_services) do
+      table.insert(names, s.name)
     end
+    local display = #names > 0 and table.concat(names, ", ") or "(none)"
+    vim.api.nvim_buf_set_lines(buf, 1, 2, false, { "// Selected: " .. display })
+  end
 
-    -- Try workspace symbols first
-    vim.lsp.buf_request(0, "workspace/symbol", { query = "" }, function(err, result)
-      if result then
-        for _, symbol in ipairs(result) do
-          if symbol.kind == SYMBOL_KIND.Class or
-             symbol.kind == SYMBOL_KIND.Interface or
-             symbol.kind == SYMBOL_KIND.Struct then
-            local kind_name = symbol.kind == SYMBOL_KIND.Interface and "interface"
-              or symbol.kind == SYMBOL_KIND.Struct and "struct"
-              or "class"
-            table.insert(all_symbols, {
-              name = symbol.name,
-              kind = kind_name,
-              container = symbol.containerName or "",
-            })
-          end
+  -- Add current input as service
+  local function add_current()
+    local lines = vim.api.nvim_buf_get_lines(buf, 3, 4, false)
+    local input = lines[1] and lines[1]:match("^%s*(.-)%s*$") or ""
+
+    if input ~= "" then
+      -- Check if already selected
+      local exists = false
+      for _, s in ipairs(selected_services) do
+        if s.name == input then
+          exists = true
+          break
         end
       end
 
-      -- If we got symbols, use them; otherwise try a different approach
-      if #all_symbols > 0 then
-        callback(all_symbols)
-      else
-        -- Fallback: scan .cs files for class/interface declarations
-        M._scan_project_for_types(function(scanned)
-          callback(scanned)
-        end)
+      if not exists then
+        table.insert(selected_services, { name = input, kind = "interface" })
+        vim.notify("Added: " .. input, vim.log.levels.INFO)
+        update_selected()
       end
-    end)
-  end
 
-  collect_symbols(function(symbols)
-    if #symbols == 0 then
-      vim.notify("No symbols found. Try typing the service name manually.", vim.log.levels.WARN)
-      M._add_service_input(class_info)
-      return
-    end
-
-    local displayer = entry_display.create({
-      separator = " ",
-      items = {
-        { width = 40 },
-        { width = 12 },
-        { remaining = true },
-      },
-    })
-
-    pickers.new({}, {
-      prompt_title = "Add DI Service (<Tab> multi-select, <CR> confirm)",
-      finder = finders.new_table({
-        results = symbols,
-        entry_maker = function(entry)
-          return {
-            value = entry,
-            display = function(e)
-              return displayer({
-                e.value.name,
-                { e.value.kind, "Comment" },
-                { e.value.container, "Comment" },
-              })
-            end,
-            ordinal = entry.name .. " " .. entry.container,
-          }
-        end,
-      }),
-      sorter = conf.generic_sorter({}),
-      attach_mappings = function(prompt_bufnr, map)
-        -- Multi-select with Tab
-        map("i", "<Tab>", function()
-          local entry = action_state.get_selected_entry()
-          if entry then
-            local already_selected = false
-            for i, s in ipairs(selected_services) do
-              if s.name == entry.value.name then
-                table.remove(selected_services, i)
-                already_selected = true
-                vim.notify("Removed: " .. entry.value.name, vim.log.levels.INFO)
-                break
-              end
-            end
-            if not already_selected then
-              table.insert(selected_services, entry.value)
-              vim.notify("Selected: " .. entry.value.name .. " (" .. #selected_services .. " total)", vim.log.levels.INFO)
-            end
-          end
-          actions.move_selection_next(prompt_bufnr)
-        end)
-
-        map("n", "<Tab>", function()
-          local entry = action_state.get_selected_entry()
-          if entry then
-            local already_selected = false
-            for i, s in ipairs(selected_services) do
-              if s.name == entry.value.name then
-                table.remove(selected_services, i)
-                already_selected = true
-                break
-              end
-            end
-            if not already_selected then
-              table.insert(selected_services, entry.value)
-            end
-          end
-          actions.move_selection_next(prompt_bufnr)
-        end)
-
-        actions.select_default:replace(function()
-          local entry = action_state.get_selected_entry()
-          actions.close(prompt_bufnr)
-
-          if entry then
-            local exists = false
-            for _, s in ipairs(selected_services) do
-              if s.name == entry.value.name then
-                exists = true
-                break
-              end
-            end
-            if not exists then
-              table.insert(selected_services, entry.value)
-            end
-          end
-
-          if #selected_services > 0 then
-            M._inject_services(class_info, selected_services)
-          else
-            vim.notify("No services selected", vim.log.levels.WARN)
-          end
-        end)
-
-        return true
-      end,
-    }):find()
-  end)
-end
-
--- Fallback: Scan project files for class/interface definitions
-function M._scan_project_for_types(callback)
-  local symbols = {}
-  local projects = require("csharp-toolkit.projects")
-  local sln_dir = projects.get_solution_dir()
-
-  -- Find all .cs files
-  local cs_files = {}
-  local function scan_dir(dir)
-    local handle = vim.loop.fs_scandir(dir)
-    if not handle then return end
-
-    while true do
-      local name, type = vim.loop.fs_scandir_next(handle)
-      if not name then break end
-
-      local full_path = dir .. "/" .. name
-
-      if type == "directory" and not name:match("^%.") and name ~= "bin" and name ~= "obj" and name ~= "node_modules" then
-        scan_dir(full_path)
-      elseif type == "file" and name:match("%.cs$") then
-        table.insert(cs_files, full_path)
-      end
+      -- Clear input line
+      vim.api.nvim_buf_set_lines(buf, 3, 4, false, { "" })
     end
   end
 
-  scan_dir(sln_dir)
+  -- Keymaps
+  local opts = { buffer = buf, silent = true }
 
-  -- Parse each file for class/interface declarations
-  for _, file in ipairs(cs_files) do
-    local f = io.open(file, "r")
-    if f then
-      local content = f:read("*all")
-      f:close()
+  -- Tab: add current and continue
+  vim.keymap.set("i", "<Tab>", function()
+    add_current()
+  end, opts)
 
-      -- Match interface declarations
-      for name in content:gmatch("interface%s+([%w_]+)") do
-        table.insert(symbols, { name = name, kind = "interface", container = "" })
-      end
+  -- Enter: add current and finish
+  vim.keymap.set("i", "<CR>", function()
+    add_current()
+    vim.api.nvim_win_close(win, true)
+    vim.api.nvim_buf_delete(buf, { force = true })
 
-      -- Match class declarations
-      for name in content:gmatch("class%s+([%w_]+)") do
-        table.insert(symbols, { name = name, kind = "class", container = "" })
-      end
+    if #selected_services > 0 then
+      M._inject_services(class_info, selected_services)
+    else
+      vim.notify("No services added", vim.log.levels.WARN)
     end
-  end
+  end, opts)
 
-  -- Remove duplicates
-  local seen = {}
-  local unique = {}
-  for _, sym in ipairs(symbols) do
-    if not seen[sym.name] then
-      seen[sym.name] = true
-      table.insert(unique, sym)
+  -- Escape: finish with current selections
+  vim.keymap.set("i", "<Esc>", function()
+    vim.api.nvim_win_close(win, true)
+    vim.api.nvim_buf_delete(buf, { force = true })
+
+    if #selected_services > 0 then
+      M._inject_services(class_info, selected_services)
     end
-  end
+  end, opts)
 
-  callback(unique)
+  vim.keymap.set("n", "<Esc>", function()
+    vim.api.nvim_win_close(win, true)
+    vim.api.nvim_buf_delete(buf, { force = true })
+
+    if #selected_services > 0 then
+      M._inject_services(class_info, selected_services)
+    end
+  end, opts)
+
+  vim.keymap.set("n", "q", function()
+    vim.api.nvim_win_close(win, true)
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end, opts)
 end
 
 -- Fallback: Add service using vim.ui.input
