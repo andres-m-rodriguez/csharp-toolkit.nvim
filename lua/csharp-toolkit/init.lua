@@ -13,6 +13,7 @@ M.config = {
     new_solution = "<leader>cs",   -- Create new solution
     add_to_solution = "<leader>ca", -- Add project to solution
     remove_from_solution = "<leader>cr", -- Remove project from solution
+    add_reference = "<leader>cR",  -- Add project reference
   },
   -- Project templates (dotnet new templates)
   templates = {
@@ -47,6 +48,18 @@ function M.setup(opts)
     solutions.list_projects()
   end, { desc = "List projects in solution" })
 
+  vim.api.nvim_create_user_command("CSAddReference", function()
+    projects.add_reference()
+  end, { desc = "Add project reference" })
+
+  vim.api.nvim_create_user_command("CSRemoveReference", function()
+    projects.remove_reference()
+  end, { desc = "Remove project reference" })
+
+  vim.api.nvim_create_user_command("CSListReferences", function()
+    projects.list_references()
+  end, { desc = "List project references" })
+
   -- Set up keymaps
   if M.config.keymaps then
     local km = M.config.keymaps
@@ -61,6 +74,9 @@ function M.setup(opts)
     end
     if km.remove_from_solution then
       vim.keymap.set("n", km.remove_from_solution, "<cmd>CSRemoveFromSolution<cr>", { desc = "Remove from solution" })
+    end
+    if km.add_reference then
+      vim.keymap.set("n", km.add_reference, "<cmd>CSAddReference<cr>", { desc = "Add project reference" })
     end
   end
 end
