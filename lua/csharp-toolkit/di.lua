@@ -176,139 +176,143 @@ function M.add_service()
   end
 end
 
--- Add service using a floating input with LSP completions
+-- Add service using inline completion in the actual buffer
 function M._add_service_telescope(class_info)
-  local selected_services = {}
-
-  -- Create a floating window for input with LSP completions
-  M._create_service_input(class_info, selected_services)
+  M._add_service_inline(class_info)
 end
 
--- Create floating input buffer with LSP completions
-function M._create_service_input(class_info, selected_services)
-  local buf = vim.api.nvim_create_buf(false, true)
+-- Add service by inserting a temporary line for LSP completions
+function M._add_service_inline(class_info)
+  local bufnr = vim.api.nvim_get_current_buf()
+  local selected_services = {}
 
-  -- Set buffer options to enable LSP
-  vim.bo[buf].filetype = "cs"
-  vim.bo[buf].buftype = ""
-  vim.bo[buf].modifiable = true
+  -- Find insert position (after class declaration)
+  local insert_line = class_info.line
 
-  -- Add a line of C# code context so LSP provides type completions
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, {
-    "// Type service name and press <CR> to add, <Tab> to add more, <Esc> to finish",
-    "// Selected: (none)",
-    "",
-    "" -- User types here
-  })
+  -- Store original state for cleanup
+  local original_line_count = vim.api.nvim_buf_line_count(bufnr)
 
-  -- Calculate window position
-  local width = 70
-  local height = 4
-  local row = math.floor((vim.o.lines - height) / 2)
-  local col = math.floor((vim.o.columns - width) / 2)
+  -- Insert helper comment and field template
+  local template_lines = {
+    "    // [DI] Type service, <Tab>=add more, <CR>=done, <Esc>=cancel",
+    "    private readonly ",
+  }
 
-  local win = vim.api.nvim_open_win(buf, true, {
-    relative = "editor",
-    width = width,
-    height = height,
-    row = row,
-    col = col,
-    style = "minimal",
-    border = "rounded",
-    title = " Add DI Service ",
-    title_pos = "center",
-  })
+  vim.api.nvim_buf_set_lines(bufnr, insert_line, insert_line, false, template_lines)
 
-  -- Position cursor on the input line
-  vim.api.nvim_win_set_cursor(win, { 4, 0 })
-  vim.cmd("startinsert")
+  -- Position cursor at end of "private readonly "
+  local cursor_line = insert_line + 2  -- 1-indexed, second inserted line
+  local cursor_col = #"    private readonly "
+  vim.api.nvim_win_set_cursor(0, { cursor_line, cursor_col })
+  vim.cmd("startinsert!")
 
-  -- Try to attach LSP for completions
-  local clients = vim.lsp.get_clients({ name = "roslyn" })
-  if #clients > 0 then
-    vim.lsp.buf_attach_client(buf, clients[1].id)
+  -- Cleanup function
+  local function cleanup()
+    -- Remove the template lines
+    pcall(function()
+      vim.api.nvim_buf_set_lines(bufnr, insert_line, insert_line + 2, false, {})
+    end)
   end
 
-  -- Update selected display
-  local function update_selected()
-    local names = {}
-    for _, s in ipairs(selected_services) do
-      table.insert(names, s.name)
-    end
-    local display = #names > 0 and table.concat(names, ", ") or "(none)"
-    vim.api.nvim_buf_set_lines(buf, 1, 2, false, { "// Selected: " .. display })
+  -- Parse the typed service name
+  local function get_typed_service()
+    local line = vim.api.nvim_buf_get_lines(bufnr, cursor_line - 1, cursor_line, false)[1]
+    if not line then return nil end
+
+    -- Extract type name after "private readonly "
+    local type_name = line:match("private%s+readonly%s+([%w_<>]+)")
+    return type_name
   end
 
-  -- Add current input as service
-  local function add_current()
-    local lines = vim.api.nvim_buf_get_lines(buf, 3, 4, false)
-    local input = lines[1] and lines[1]:match("^%s*(.-)%s*$") or ""
+  -- Add current service and prepare for next
+  local function add_and_continue()
+    local service = get_typed_service()
+    if service and service ~= "" then
+      table.insert(selected_services, { name = service, kind = "interface" })
+      vim.notify("Added: " .. service .. " (" .. #selected_services .. " total)", vim.log.levels.INFO)
 
-    if input ~= "" then
-      -- Check if already selected
-      local exists = false
-      for _, s in ipairs(selected_services) do
-        if s.name == input then
-          exists = true
-          break
-        end
-      end
-
-      if not exists then
-        table.insert(selected_services, { name = input, kind = "interface" })
-        vim.notify("Added: " .. input, vim.log.levels.INFO)
-        update_selected()
-      end
-
-      -- Clear input line
-      vim.api.nvim_buf_set_lines(buf, 3, 4, false, { "" })
+      -- Reset the line for next input
+      vim.api.nvim_buf_set_lines(bufnr, cursor_line - 1, cursor_line, false, {
+        "    private readonly "
+      })
+      vim.api.nvim_win_set_cursor(0, { cursor_line, cursor_col })
+      vim.cmd("startinsert!")
     end
   end
 
-  -- Keymaps
-  local opts = { buffer = buf, silent = true }
+  -- Finish and inject services
+  local function finish()
+    local service = get_typed_service()
+    if service and service ~= "" then
+      table.insert(selected_services, { name = service, kind = "interface" })
+    end
 
-  -- Tab: add current and continue
+    cleanup()
+
+    if #selected_services > 0 then
+      vim.schedule(function()
+        M._inject_services(class_info, selected_services)
+      end)
+    else
+      vim.notify("No services added", vim.log.levels.INFO)
+    end
+  end
+
+  -- Cancel
+  local function cancel()
+    cleanup()
+    vim.notify("Cancelled", vim.log.levels.INFO)
+  end
+
+  -- Set up keymaps for this session
+  local opts = { buffer = bufnr, silent = true }
+
+  -- Store original keymaps to restore later
+  local km_tab = vim.fn.maparg("<Tab>", "i", false, true)
+  local km_cr = vim.fn.maparg("<CR>", "i", false, true)
+  local km_esc = vim.fn.maparg("<Esc>", "i", false, true)
+
+  -- Create an augroup for cleanup
+  local augroup = vim.api.nvim_create_augroup("CSAddServiceInline", { clear = true })
+
+  local function restore_keymaps()
+    pcall(vim.keymap.del, "i", "<Tab>", { buffer = bufnr })
+    pcall(vim.keymap.del, "i", "<CR>", { buffer = bufnr })
+    pcall(vim.keymap.del, "i", "<Esc>", { buffer = bufnr })
+    vim.api.nvim_del_augroup_by_id(augroup)
+  end
+
+  -- Tab: add current service and continue
   vim.keymap.set("i", "<Tab>", function()
-    add_current()
+    add_and_continue()
   end, opts)
 
   -- Enter: add current and finish
   vim.keymap.set("i", "<CR>", function()
-    add_current()
-    vim.api.nvim_win_close(win, true)
-    vim.api.nvim_buf_delete(buf, { force = true })
-
-    if #selected_services > 0 then
-      M._inject_services(class_info, selected_services)
-    else
-      vim.notify("No services added", vim.log.levels.WARN)
-    end
+    restore_keymaps()
+    finish()
   end, opts)
 
-  -- Escape: finish with current selections
+  -- Escape: cancel
   vim.keymap.set("i", "<Esc>", function()
-    vim.api.nvim_win_close(win, true)
-    vim.api.nvim_buf_delete(buf, { force = true })
-
-    if #selected_services > 0 then
-      M._inject_services(class_info, selected_services)
-    end
+    restore_keymaps()
+    cancel()
   end, opts)
 
-  vim.keymap.set("n", "<Esc>", function()
-    vim.api.nvim_win_close(win, true)
-    vim.api.nvim_buf_delete(buf, { force = true })
-
-    if #selected_services > 0 then
-      M._inject_services(class_info, selected_services)
-    end
-  end, opts)
-
-  vim.keymap.set("n", "q", function()
-    vim.api.nvim_win_close(win, true)
-    vim.api.nvim_buf_delete(buf, { force = true })
-  end, opts)
+  -- Auto-cleanup if user leaves insert mode unexpectedly
+  vim.api.nvim_create_autocmd("InsertLeave", {
+    group = augroup,
+    buffer = bufnr,
+    once = true,
+    callback = function()
+      -- Check if we still have our template
+      local line = vim.api.nvim_buf_get_lines(bufnr, insert_line, insert_line + 1, false)[1]
+      if line and line:match("%[DI%]") then
+        restore_keymaps()
+        finish()
+      end
+    end,
+  })
 end
 
 -- Fallback: Add service using vim.ui.input
