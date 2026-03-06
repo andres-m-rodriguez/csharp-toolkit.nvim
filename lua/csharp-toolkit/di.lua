@@ -501,7 +501,14 @@ end
 
 -- Trigger LSP code action to add missing usings
 function M._add_missing_usings()
-  local params = vim.lsp.util.make_range_params()
+  -- Get the first LSP client's offset encoding
+  local clients = vim.lsp.get_clients({ bufnr = 0 })
+  local encoding = "utf-16"
+  if #clients > 0 then
+    encoding = clients[1].offset_encoding or "utf-16"
+  end
+
+  local params = vim.lsp.util.make_range_params(0, encoding)
   params.context = {
     diagnostics = vim.diagnostic.get(0),
     only = { "quickfix" },
