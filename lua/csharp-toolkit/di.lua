@@ -553,18 +553,37 @@ function M.show_usings()
       if not choice or not idx then return end
 
       local action = using_actions[idx]
+      local client = clients[1]
 
-      -- Execute the code action
-      if action.edit then
-        vim.lsp.util.apply_workspace_edit(action.edit, encoding)
+      -- Some actions need to be resolved first
+      if not action.edit and not action.command and client.supports_method("codeAction/resolve") then
+        client.request("codeAction/resolve", action, function(err, resolved)
+          if err then
+            vim.notify("Failed to resolve action", vim.log.levels.ERROR)
+            return
+          end
+          M._apply_code_action(resolved, encoding)
+        end, 0)
+      else
+        M._apply_code_action(action, encoding)
       end
-      if action.command then
-        vim.lsp.buf.execute_command(action.command)
-      end
-
-      vim.notify("Added: " .. action.title, vim.log.levels.INFO)
     end)
   end)
+end
+
+-- Apply a code action
+function M._apply_code_action(action, encoding)
+  if action.edit then
+    vim.lsp.util.apply_workspace_edit(action.edit, encoding)
+  end
+  if action.command then
+    if type(action.command) == "table" then
+      vim.lsp.buf.execute_command(action.command)
+    else
+      vim.lsp.buf.execute_command({ command = action.command })
+    end
+  end
+  vim.notify("Added: " .. (action.title or "using"), vim.log.levels.INFO)
 end
 
 -- Trigger LSP code action to add missing usings
