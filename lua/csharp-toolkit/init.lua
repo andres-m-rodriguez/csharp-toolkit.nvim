@@ -15,6 +15,7 @@ M.config = {
     remove_from_solution = "<leader>cr", -- Remove project from solution
     add_reference = "<leader>cR",  -- Add project reference
     help = "<leader>ch",           -- Show help
+    init_file = "<leader>ci",      -- Initialize empty C# file
   },
   -- Project templates (dotnet new templates)
   templates = {
@@ -65,6 +66,10 @@ function M.setup(opts)
     M.show_help()
   end, { desc = "Show C# toolkit help" })
 
+  vim.api.nvim_create_user_command("CSInitFile", function()
+    projects.init_file()
+  end, { desc = "Initialize C# file with namespace and class" })
+
   -- Set up keymaps
   if M.config.keymaps then
     local km = M.config.keymaps
@@ -86,6 +91,9 @@ function M.setup(opts)
     if km.help then
       vim.keymap.set("n", km.help, "<cmd>CSHelp<cr>", { desc = "C# toolkit help" })
     end
+    if km.init_file then
+      vim.keymap.set("n", km.init_file, "<cmd>CSInitFile<cr>", { desc = "Initialize C# file" })
+    end
   end
 end
 
@@ -98,6 +106,9 @@ function M.show_help()
     "│           C# Toolkit - Keybinds             │",
     "├─────────────────────────────────────────────┤",
     "│                                             │",
+    "│  Files                                      │",
+    string.format("│    %s  Initialize C# file              │", km.init_file and string.format("%-10s", km.init_file) or "disabled  "),
+    "│                                             │",
     "│  Projects                                   │",
     string.format("│    %s  Create new project              │", km.new_project and string.format("%-10s", km.new_project) or "disabled  "),
     string.format("│    %s  Add project reference           │", km.add_reference and string.format("%-10s", km.add_reference) or "disabled  "),
@@ -108,6 +119,7 @@ function M.show_help()
     string.format("│    %s  Remove from solution            │", km.remove_from_solution and string.format("%-10s", km.remove_from_solution) or "disabled  "),
     "│                                             │",
     "│  Commands                                   │",
+    "│    :CSInitFile        Init file template    │",
     "│    :CSNewProject      Create project        │",
     "│    :CSNewSolution     Create solution       │",
     "│    :CSAddToSolution   Add to solution       │",

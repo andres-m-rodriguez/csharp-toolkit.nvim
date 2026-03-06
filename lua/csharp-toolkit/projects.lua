@@ -166,6 +166,21 @@ function M.find_csproj_files(root_dir)
   return results
 end
 
+-- Find .csproj directory and name starting from a directory
+function M.find_csproj_info(start_dir)
+  local current = start_dir
+
+  while current ~= "" and current ~= "/" and not current:match("^%a:[\\/]?$") do
+    local csproj = vim.fn.glob(current .. "/*.csproj")
+    if csproj ~= "" then
+      return current, vim.fn.fnamemodify(csproj, ":t:r")
+    end
+    current = vim.fn.fnamemodify(current, ":h")
+  end
+
+  return nil, nil
+end
+
 -- Find the nearest .csproj to the current file
 function M.find_current_project()
   local current_file = vim.fn.expand("%:p")
@@ -407,6 +422,76 @@ function M.list_references()
 
     vim.notify(table.concat(lines, "\n"), vim.log.levels.INFO)
   end)
+end
+
+-- Initialize a C# file with namespace and class
+function M.init_file()
+  local filepath = vim.fn.expand("%:p")
+  local filename = vim.fn.expand("%:t:r")
+  local dir = vim.fn.expand("%:p:h")
+
+  -- Check if it's a .cs file
+  if not filepath:match("%.cs$") then
+    vim.notify("Not a C# file", vim.log.levels.WARN)
+    return
+  end
+
+  -- Check if file is empty or only whitespace
+  local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+  local has_content = false
+  for _, line in ipairs(lines) do
+    if line:match("%S") then
+      has_content = true
+      break
+    end
+  end
+
+  if has_content then
+    vim.ui.select({ "Yes", "No" }, {
+      prompt = "File is not empty. Replace contents?",
+    }, function(choice)
+      if choice == "Yes" then
+        M._insert_template(filepath, filename, dir)
+      end
+    end)
+  else
+    M._insert_template(filepath, filename, dir)
+  end
+end
+
+-- Internal: Insert the C# template
+function M._insert_template(filepath, filename, dir)
+  local project_dir, project_name = M.find_csproj_info(dir)
+  local namespace
+
+  if project_dir and project_name then
+    -- Build namespace from project name + relative path
+    local rel_path = dir:sub(#project_dir + 2)
+    rel_path = rel_path:gsub("[\\/]", ".")
+    if rel_path ~= "" then
+      namespace = project_name .. "." .. rel_path
+    else
+      namespace = project_name
+    end
+  else
+    -- Fallback: use parent directory name
+    namespace = vim.fn.expand("%:p:h:t")
+  end
+
+  -- Clean up namespace
+  namespace = namespace:gsub("[^%w%.]", "")
+
+  local template = string.format([[namespace %s;
+
+public class %s
+{
+
+}]], namespace, filename)
+
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, vim.split(template, "\n"))
+  -- Position cursor inside the class
+  vim.api.nvim_win_set_cursor(0, { 5, 4 })
+  vim.notify("Initialized: " .. filename .. ".cs", vim.log.levels.INFO)
 end
 
 return M
