@@ -5,6 +5,7 @@ local M = {}
 
 local projects = require("csharp-toolkit.projects")
 local solutions = require("csharp-toolkit.solutions")
+local di = require("csharp-toolkit.di")
 
 M.config = {
   -- Default keybindings (set to false to disable)
@@ -16,6 +17,7 @@ M.config = {
     add_reference = "<leader>cR",  -- Add project reference
     help = "<leader>ch",           -- Show help
     init_file = "<leader>ci",      -- Initialize empty C# file
+    add_service = "<leader>cd",    -- Add DI service to class
   },
   -- Project templates (dotnet new templates)
   templates = {
@@ -70,6 +72,10 @@ function M.setup(opts)
     projects.init_file()
   end, { desc = "Initialize C# file with namespace and class" })
 
+  vim.api.nvim_create_user_command("CSAddService", function()
+    di.add_service()
+  end, { desc = "Add DI service to class" })
+
   -- Set up keymaps
   if M.config.keymaps then
     local km = M.config.keymaps
@@ -94,6 +100,9 @@ function M.setup(opts)
     if km.init_file then
       vim.keymap.set("n", km.init_file, "<cmd>CSInitFile<cr>", { desc = "Initialize C# file" })
     end
+    if km.add_service then
+      vim.keymap.set("n", km.add_service, "<cmd>CSAddService<cr>", { desc = "Add DI service" })
+    end
   end
 end
 
@@ -108,6 +117,7 @@ function M.show_help()
     "│                                             │",
     "│  Files                                      │",
     string.format("│    %s  Initialize C# file              │", km.init_file and string.format("%-10s", km.init_file) or "disabled  "),
+    string.format("│    %s  Add DI service                  │", km.add_service and string.format("%-10s", km.add_service) or "disabled  "),
     "│                                             │",
     "│  Projects                                   │",
     string.format("│    %s  Create new project              │", km.new_project and string.format("%-10s", km.new_project) or "disabled  "),
@@ -120,6 +130,7 @@ function M.show_help()
     "│                                             │",
     "│  Commands                                   │",
     "│    :CSInitFile        Init file template    │",
+    "│    :CSAddService      Add DI service        │",
     "│    :CSNewProject      Create project        │",
     "│    :CSNewSolution     Create solution       │",
     "│    :CSAddToSolution   Add to solution       │",
@@ -164,5 +175,6 @@ end
 -- Expose modules for direct access
 M.projects = projects
 M.solutions = solutions
+M.di = di
 
 return M
