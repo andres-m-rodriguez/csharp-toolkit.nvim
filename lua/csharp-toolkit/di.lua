@@ -176,108 +176,216 @@ function M._add_service_telescope(class_info)
   local conf = require("telescope.config").values
   local actions = require("telescope.actions")
   local action_state = require("telescope.actions.state")
+  local entry_display = require("telescope.pickers.entry_display")
 
-  -- We'll use a dynamic finder that queries LSP as user types
   local selected_services = {}
 
-  pickers.new({}, {
-    prompt_title = "Add DI Service (type to search, <Tab> to select multiple, <CR> to confirm)",
-    finder = finders.new_dynamic({
-      fn = function(prompt)
-        if not prompt or prompt == "" then
-          return {}
+  -- First, let's get document symbols from current buffer and workspace
+  local function collect_symbols(callback)
+    local all_symbols = {}
+
+    -- Get workspace symbols with a broad query
+    local clients = vim.lsp.get_clients({ bufnr = 0 })
+    if #clients == 0 then
+      vim.notify("No LSP client attached", vim.log.levels.WARN)
+      callback({})
+      return
+    end
+
+    -- Try workspace symbols first
+    vim.lsp.buf_request(0, "workspace/symbol", { query = "" }, function(err, result)
+      if result then
+        for _, symbol in ipairs(result) do
+          if symbol.kind == SYMBOL_KIND.Class or
+             symbol.kind == SYMBOL_KIND.Interface or
+             symbol.kind == SYMBOL_KIND.Struct then
+            local kind_name = symbol.kind == SYMBOL_KIND.Interface and "interface"
+              or symbol.kind == SYMBOL_KIND.Struct and "struct"
+              or "class"
+            table.insert(all_symbols, {
+              name = symbol.name,
+              kind = kind_name,
+              container = symbol.containerName or "",
+            })
+          end
         end
+      end
 
-        -- Synchronous LSP request
-        local params = { query = prompt }
-        local results = vim.lsp.buf_request_sync(0, "workspace/symbol", params, 2000)
+      -- If we got symbols, use them; otherwise try a different approach
+      if #all_symbols > 0 then
+        callback(all_symbols)
+      else
+        -- Fallback: scan .cs files for class/interface declarations
+        M._scan_project_for_types(function(scanned)
+          callback(scanned)
+        end)
+      end
+    end)
+  end
 
-        if not results then
-          return {}
-        end
+  collect_symbols(function(symbols)
+    if #symbols == 0 then
+      vim.notify("No symbols found. Try typing the service name manually.", vim.log.levels.WARN)
+      M._add_service_input(class_info)
+      return
+    end
 
-        local symbols = {}
-        for _, res in pairs(results) do
-          if res.result then
-            for _, symbol in ipairs(res.result) do
-              if symbol.kind == SYMBOL_KIND.Class or
-                 symbol.kind == SYMBOL_KIND.Interface or
-                 symbol.kind == SYMBOL_KIND.Struct then
-                local kind_name = symbol.kind == SYMBOL_KIND.Interface and "interface" or "class"
-                table.insert(symbols, {
-                  name = symbol.name,
-                  kind = kind_name,
-                  display = symbol.name .. " (" .. kind_name .. ")",
-                  container = symbol.containerName or "",
-                })
+    local displayer = entry_display.create({
+      separator = " ",
+      items = {
+        { width = 40 },
+        { width = 12 },
+        { remaining = true },
+      },
+    })
+
+    pickers.new({}, {
+      prompt_title = "Add DI Service (<Tab> multi-select, <CR> confirm)",
+      finder = finders.new_table({
+        results = symbols,
+        entry_maker = function(entry)
+          return {
+            value = entry,
+            display = function(e)
+              return displayer({
+                e.value.name,
+                { e.value.kind, "Comment" },
+                { e.value.container, "Comment" },
+              })
+            end,
+            ordinal = entry.name .. " " .. entry.container,
+          }
+        end,
+      }),
+      sorter = conf.generic_sorter({}),
+      attach_mappings = function(prompt_bufnr, map)
+        -- Multi-select with Tab
+        map("i", "<Tab>", function()
+          local entry = action_state.get_selected_entry()
+          if entry then
+            local already_selected = false
+            for i, s in ipairs(selected_services) do
+              if s.name == entry.value.name then
+                table.remove(selected_services, i)
+                already_selected = true
+                vim.notify("Removed: " .. entry.value.name, vim.log.levels.INFO)
+                break
               end
             end
-          end
-        end
-
-        return symbols
-      end,
-      entry_maker = function(entry)
-        return {
-          value = entry,
-          display = entry.display,
-          ordinal = entry.name,
-        }
-      end,
-    }),
-    sorter = conf.generic_sorter({}),
-    attach_mappings = function(prompt_bufnr, map)
-      -- Multi-select with Tab
-      map("i", "<Tab>", function()
-        local entry = action_state.get_selected_entry()
-        if entry then
-          local already_selected = false
-          for i, s in ipairs(selected_services) do
-            if s.name == entry.value.name then
-              table.remove(selected_services, i)
-              already_selected = true
-              vim.notify("Removed: " .. entry.value.name, vim.log.levels.INFO)
-              break
+            if not already_selected then
+              table.insert(selected_services, entry.value)
+              vim.notify("Selected: " .. entry.value.name .. " (" .. #selected_services .. " total)", vim.log.levels.INFO)
             end
           end
-          if not already_selected then
-            table.insert(selected_services, entry.value)
-            vim.notify("Selected: " .. entry.value.name .. " (" .. #selected_services .. " total)", vim.log.levels.INFO)
-          end
-        end
-        -- Move to next item
-        actions.move_selection_next(prompt_bufnr)
-      end)
+          actions.move_selection_next(prompt_bufnr)
+        end)
 
-      -- Confirm selection
-      actions.select_default:replace(function()
-        local entry = action_state.get_selected_entry()
-        actions.close(prompt_bufnr)
-
-        -- Add current selection if not already in list
-        if entry then
-          local exists = false
-          for _, s in ipairs(selected_services) do
-            if s.name == entry.value.name then
-              exists = true
-              break
+        map("n", "<Tab>", function()
+          local entry = action_state.get_selected_entry()
+          if entry then
+            local already_selected = false
+            for i, s in ipairs(selected_services) do
+              if s.name == entry.value.name then
+                table.remove(selected_services, i)
+                already_selected = true
+                break
+              end
+            end
+            if not already_selected then
+              table.insert(selected_services, entry.value)
             end
           end
-          if not exists then
-            table.insert(selected_services, entry.value)
+          actions.move_selection_next(prompt_bufnr)
+        end)
+
+        actions.select_default:replace(function()
+          local entry = action_state.get_selected_entry()
+          actions.close(prompt_bufnr)
+
+          if entry then
+            local exists = false
+            for _, s in ipairs(selected_services) do
+              if s.name == entry.value.name then
+                exists = true
+                break
+              end
+            end
+            if not exists then
+              table.insert(selected_services, entry.value)
+            end
           end
-        end
 
-        if #selected_services > 0 then
-          M._inject_services(class_info, selected_services)
-        else
-          vim.notify("No services selected", vim.log.levels.WARN)
-        end
-      end)
+          if #selected_services > 0 then
+            M._inject_services(class_info, selected_services)
+          else
+            vim.notify("No services selected", vim.log.levels.WARN)
+          end
+        end)
 
-      return true
-    end,
-  }):find()
+        return true
+      end,
+    }):find()
+  end)
+end
+
+-- Fallback: Scan project files for class/interface definitions
+function M._scan_project_for_types(callback)
+  local symbols = {}
+  local projects = require("csharp-toolkit.projects")
+  local sln_dir = projects.get_solution_dir()
+
+  -- Find all .cs files
+  local cs_files = {}
+  local function scan_dir(dir)
+    local handle = vim.loop.fs_scandir(dir)
+    if not handle then return end
+
+    while true do
+      local name, type = vim.loop.fs_scandir_next(handle)
+      if not name then break end
+
+      local full_path = dir .. "/" .. name
+
+      if type == "directory" and not name:match("^%.") and name ~= "bin" and name ~= "obj" and name ~= "node_modules" then
+        scan_dir(full_path)
+      elseif type == "file" and name:match("%.cs$") then
+        table.insert(cs_files, full_path)
+      end
+    end
+  end
+
+  scan_dir(sln_dir)
+
+  -- Parse each file for class/interface declarations
+  for _, file in ipairs(cs_files) do
+    local f = io.open(file, "r")
+    if f then
+      local content = f:read("*all")
+      f:close()
+
+      -- Match interface declarations
+      for name in content:gmatch("interface%s+([%w_]+)") do
+        table.insert(symbols, { name = name, kind = "interface", container = "" })
+      end
+
+      -- Match class declarations
+      for name in content:gmatch("class%s+([%w_]+)") do
+        table.insert(symbols, { name = name, kind = "class", container = "" })
+      end
+    end
+  end
+
+  -- Remove duplicates
+  local seen = {}
+  local unique = {}
+  for _, sym in ipairs(symbols) do
+    if not seen[sym.name] then
+      seen[sym.name] = true
+      table.insert(unique, sym)
+    end
+  end
+
+  callback(unique)
 end
 
 -- Fallback: Add service using vim.ui.input
