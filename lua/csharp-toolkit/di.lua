@@ -499,6 +499,74 @@ function M._inject_services_primary(class_info, services)
   end, 100)
 end
 
+-- Show available using/import actions for the current position
+function M.show_usings()
+  local clients = vim.lsp.get_clients({ bufnr = 0 })
+  if #clients == 0 then
+    vim.notify("No LSP client attached", vim.log.levels.WARN)
+    return
+  end
+
+  local encoding = clients[1].offset_encoding or "utf-16"
+  local params = vim.lsp.util.make_range_params(0, encoding)
+  params.context = {
+    diagnostics = vim.diagnostic.get(0),
+    only = { "quickfix" },
+  }
+
+  vim.lsp.buf_request(0, "textDocument/codeAction", params, function(err, result)
+    if err then
+      vim.notify("LSP error: " .. vim.inspect(err), vim.log.levels.ERROR)
+      return
+    end
+
+    if not result or #result == 0 then
+      vim.notify("No import suggestions available", vim.log.levels.INFO)
+      return
+    end
+
+    -- Filter for using/import related actions
+    local using_actions = {}
+    for _, action in ipairs(result) do
+      local title = action.title or ""
+      if title:match("^using") or title:match("^Using") or
+         title:match("^Add using") or title:match("^Import") or
+         title:match("Microsoft%.") or title:match("System%.") then
+        table.insert(using_actions, action)
+      end
+    end
+
+    if #using_actions == 0 then
+      vim.notify("No import suggestions available", vim.log.levels.INFO)
+      return
+    end
+
+    -- Show picker
+    local items = {}
+    for _, action in ipairs(using_actions) do
+      table.insert(items, action.title)
+    end
+
+    vim.ui.select(items, {
+      prompt = "Select using to add:",
+    }, function(choice, idx)
+      if not choice or not idx then return end
+
+      local action = using_actions[idx]
+
+      -- Execute the code action
+      if action.edit then
+        vim.lsp.util.apply_workspace_edit(action.edit, encoding)
+      end
+      if action.command then
+        vim.lsp.buf.execute_command(action.command)
+      end
+
+      vim.notify("Added: " .. action.title, vim.log.levels.INFO)
+    end)
+  end)
+end
+
 -- Trigger LSP code action to add missing usings
 function M._add_missing_usings()
   -- Get the first LSP client's offset encoding

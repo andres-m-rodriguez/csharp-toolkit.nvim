@@ -18,6 +18,7 @@ M.config = {
     help = "<leader>ch",           -- Show help
     init_file = "<leader>ci",      -- Initialize empty C# file
     add_service = "<leader>cd",    -- Add DI service to class
+    add_using = "<leader>cu",      -- Show available usings to import
   },
   -- Project templates (dotnet new templates)
   templates = {
@@ -76,6 +77,10 @@ function M.setup(opts)
     di.add_service()
   end, { desc = "Add DI service to class" })
 
+  vim.api.nvim_create_user_command("CSAddUsing", function()
+    di.show_usings()
+  end, { desc = "Show available usings to import" })
+
   -- Set up keymaps
   if M.config.keymaps then
     local km = M.config.keymaps
@@ -103,6 +108,9 @@ function M.setup(opts)
     if km.add_service then
       vim.keymap.set("n", km.add_service, "<cmd>CSAddService<cr>", { desc = "Add DI service" })
     end
+    if km.add_using then
+      vim.keymap.set("n", km.add_using, "<cmd>CSAddUsing<cr>", { desc = "Add using" })
+    end
   end
 end
 
@@ -118,6 +126,7 @@ function M.show_help()
     "│  Files                                      │",
     string.format("│    %s  Initialize C# file              │", km.init_file and string.format("%-10s", km.init_file) or "disabled  "),
     string.format("│    %s  Add DI service                  │", km.add_service and string.format("%-10s", km.add_service) or "disabled  "),
+    string.format("│    %s  Add using/import                │", km.add_using and string.format("%-10s", km.add_using) or "disabled  "),
     "│                                             │",
     "│  Projects                                   │",
     string.format("│    %s  Create new project              │", km.new_project and string.format("%-10s", km.new_project) or "disabled  "),
